@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+
+"""The elkctl tool allows ELK users to search their logs like proper IT guys,
+from the command line. It provides a slightly journaldctl-like experience (in a
+good way) and will hopefully provide a cure for Tourette outbursts that are so
+common amongst admins who decide to send all their logs to an ELK and then
+realise that they have to search them from a shitty web interface.
+"""
+
+__author__ = "Karsten Franke"
+__version__ = "0.2.1"
+
+import argparse
+import json
+import time
+import sys
+import os
+from elasticsearch import Elasticsearch
+
+class Elkctl():
+    '''The Elkctrl class provides methods to query an ELK, and to
+    parse and display the returned logs similar to journaldctl'''
+
+    def __init__(self, since, until, follow, show_all, limit,
+                 message_filters, debug, interval, config, host, output):
+        self._message_filters = message_filters
+        self._config = self._load_config(config)
+        self.query = self._gen_query(since, until, message_filters)
+        self.debug = debug
+        self.limit = limit
+        self.show_all = show_all
+        self.follow = follow
+        self.last_run = since
+        self._interval = interval
+        self._output_fields = output
+        self.elastic = self.create_es(host)
+
+    def query_elk(self):
+        '''Query the ELK once or, if the --follow option is set,
+        in regular intervals'''
+        if self.follow:
+            try:
+                while True:
+                    self.query = self._gen_query(self.last_run, 'now', self._message_filters)
+                    self.run_query()
+                    time.sleep(self._interval)
+            except KeyboardInterrupt:
+                sys.exit(0)
+        else:
+            self.run_query()
+
+    def  run_query(self):
+        '''Query the elk and print results'''
+        if self.debug:
+            print("DEBUG: Sending query: {}\n".format(json.dumps(self.query)))
+
+        msg_count = self.elastic.count(body=self.query)
+        printed_messages = 0
+
+        result_size = self._get_message_batch_size()
+        res = self.elastic.search(body=self.query, size=result_size,
+                                  scroll='1m', sort='@timestamp:asc')
+        self._print_result(res)
+
+        while res['hits']['hits'] and printed_messages < self.limit:
+            res = self.elastic.scroll(scroll_id=res['_scroll_id'], scroll='1m')
+            self._print_result(res)
+            printed_messages += result_size
+
+        if msg_count['count'] > self.limit:
+            print("\nWARNING: Returned messages over limit.\n"
+                  + "Your search returned {} messages.\n".format(msg_count['count'])
+                  + "Displaying the first {} messages\n".format(printed_messages))
+
+    def create_es(self, host):
+        '''Set the host name and return an elasticsearch object'''
+
+        if host != "localhost:9200":
+            return Elasticsearch(host)
+
+        if 'elkhost' not in self._config:
+            return Elasticsearch(host)
+
+        if 'endpoint' in self._config['elkhost']:
+            host = self._config['elkhost']['endpoint']
+
+        if 'username' in self._config['elkhost'] \
+            and 'password' in self._config['elkhost']:
+            return Elasticsearch(host, http_auth=(
+                self._config['elkhost']['username'], self._config['elkhost']['password']))
+
+        return Elasticsearch(host)
+
+    def _load_config(self, config):
+        '''Loads filters and other configuration from provided config file'''
+        if os.path.isfile(config):
+            try:
+                with open(config) as file:
+                    return json.load(file)
+            except json.decoder.JSONDecodeError as err:
+                print("ERROR: Your config in {} is pish: {}".format(config, err), file=sys.stderr)
+                sys.exit(2)
+        else:
+            print("WARNING: Config file {} not found. Continuing without.".format(config))
+            return json.loads('{ "filters": [] }')
+
+    def _gen_query(self, since, until, message_filters):
+        '''Generates the search filters'''
+
+        # Is it a pre-defined filter?
+        for entry in self._config['filters']:
+            if message_filters == entry['name']:
+                query = entry['query']
+                query['query']['bool']['must'] = [
+                    {"range": {"@timestamp": {"gte":since}}},
+                    {"range": {"@timestamp": {"lte":until}}}]
+                return query
+
+        # Not pre-defined, lets build it
+        musts = [
+            {"range":{"@timestamp": {"gte": since}}},
+            {"range":{"@timestamp": {"lte": until}}},
+        ]
+        filters = []
+        for entry in message_filters.split(','):
+
+            try:
+                (field, phrase) = entry.split('=')
+            except ValueError:
+                print("\nERROR: {} isn't a valid filter.\n".format(entry)
+                      + "\nChoose one of the following pre-defined filters:\n")
+
+                self._print_defined_filters()
+            filters.append({"match_phrase": {field: phrase}})
+
+        query = {
+            "query": {
+                "bool": {
+                    "must": musts,
+                    "should": filters,
+                    "minimum_should_match": 1
+                    }
+                }
+        }
+
+        return query
+
+    def _print_defined_filters(self):
+        '''Prints an overview of all pre-defined filters'''
+
+        if not self._config['filters']:
+            print("There are currently no filters defined in your configuration\n"
+                  + "Add them to ~/.config/elkctl.conf\n")
+            sys.exit(2)
+
+        nwidth = 0
+        dwidth = 0
+        for fentry in self._config['filters']:
+            if nwidth < len(fentry['name']):
+                nwidth = len(fentry['name'])
+            if dwidth < len(fentry['desc']):
+                dwidth = len(fentry['desc'])
+
+        print("{:{nwidth}} | {}".format("Name", "Description", nwidth=nwidth))
+        print('-' * (nwidth + dwidth + 3))
+        for fentry in self._config['filters']:
+            print("{:{nwidth}} | {}".format(fentry['name'], fentry['desc'], nwidth=nwidth))
+
+        print("\nOr define an ad-hoc filter in the following format:"
+              + "\nfield=value1,field=value2,...\n")
+        sys.exit(2)
+
+
+    def _get_message_batch_size(self):
+        '''Returns either the configured message batch size
+        from the config file or the default value (1000)'''
+        message_batch_size = 1000
+
+        if 'message_batch_size' in self._config:
+            try:
+                message_batch_size = int(self._config['message_batch_size'])
+            except ValueError:
+                print("ERROR: \"{}\" isn't a valid value".format(self._config['message_batch_size'])
+                      + " for message_batch_size. This must be an integer.", file=sys.stderr)
+                sys.exit(2)
+
+        if self.limit < message_batch_size:
+            message_batch_size = self.limit
+
+        return message_batch_size
+
+    def _print_result(self, result):
+        '''Prints the returned messages'''
+        for hit in result['hits']['hits']:
+            _ts = hit['_source']['@timestamp']
+            # Add a microsecond to the timestamp to
+            # avoid repetition when following logs
+            self.last_run = "{}{}Z".format(_ts[0:22], int(_ts[22]) + 1)
+            if self.show_all:
+                print(hit)
+            else:
+                output = []
+                for field in self._output_fields.split(','):
+                    if field in hit['_source']:
+                        output.append(hit['_source'][field])
+                if output:
+                    print(*output)
+                else:
+                    print(hit)
+
+if __name__ == "__main__":
+    PARSER = argparse.ArgumentParser(
+        description='Query the ELK like a proper IT guy, from the command line*',
+        epilog='*because, let\'s face it, centralised logging is great but Kibana sucks!')
+    PARSER.add_argument('-s', '--since', default='now-5m',
+                        help='Show entries since the specified point in time (default: now-5m)')
+    PARSER.add_argument('-u', '--until', default='now',
+                        help='Show entries until the specified point in time (default: now)')
+    PARSER.add_argument('-a', '--all', action='store_true', help='show all fields in full')
+    PARSER.add_argument('-d', '--debug', action='store_true',
+                        help='print debug information')
+    PARSER.add_argument('-f', '--follow', action='store_true', help='follow the logs')
+    PARSER.add_argument('-o', '--output', default="host,log,message",
+                        help="A comma separated list of fields that should be printed"
+                        + "(default: host,log,message)")
+    PARSER.add_argument('-l', '--limit', type=int, default=10000,
+                        help='Limit result (default 10000)')
+    PARSER.add_argument('-i', '--interval', type=int, default=15,
+                        help='Refresh interval (default 15). Use with -f --follow')
+    PARSER.add_argument('-c', '--config',
+                        default="{}/.config/elkctl.conf".format(os.getenv('HOME')),
+                        help='The config file')
+    PARSER.add_argument('-H', '--host', default="localhost:9200",
+                        help='The ELK hostname and port (host:port)')
+    PARSER.add_argument('filter', help='a pre-defined filter '
+                        + '(? provides a list of all defined filters)'
+                        + ' or ad-hoc query (field=value,field=value,...)')
+    ARGS = vars(PARSER.parse_args())
+    EC = Elkctl(ARGS['since'], ARGS['until'], ARGS['follow'],
+                ARGS['all'], ARGS['limit'], ARGS['filter'],
+                ARGS['debug'], ARGS['interval'], ARGS['config'],
+                ARGS['host'], ARGS['output'])
+    EC.query_elk()
