@@ -1,2 +1,2 @@
 # elkctl
-Access your ELK logs from the command line
+The elkctl tool allows Elasticsearch users to search their logs like proper IT guys,                                         from the command line. It provides a slightly journaldctl-like experience (in a                                               good way) and will hopefully provide a cure for Tourette outbursts that are so                                                  common amongst admins who decide to send all their logs to an ELK and then                                              realise that they have to search them from a shitty web interface.
