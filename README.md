@@ -43,5 +43,5 @@ Run ./elkctl -h for more help
 elkctl host=myhost
 ```
 
-Replace `myhost` with a host that sends its logs to your Elasticsearch.
+Replace `myhost` with a host that sends its logs to your Elasticsearch and you should see logs.
 
