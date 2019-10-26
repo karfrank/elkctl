@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""The elkctl tool allows ELK users to search their logs like proper IT guys,
+"""The elkctl tool allows ELK users to search their logs like proper IT guys:
 from the command line. It provides a slightly journaldctl-like experience (in a
 good way) and will hopefully provide a cure for Tourette outbursts that are so
 common amongst admins who decide to send all their logs to an ELK and then
@@ -21,49 +21,47 @@ class Elkctl():
     '''The Elkctrl class provides methods to query an ELK, and to
     parse and display the returned logs similar to journaldctl'''
 
-    def __init__(self, since, until, follow, show_all, limit,
-                 message_filters, debug, interval, config, host, output):
-        self._message_filters = message_filters
+    def __init__(self, config, host):
         self._config = self._load_config(config)
-        self.query = self._gen_query(since, until, message_filters)
-        self.debug = debug
-        self.limit = limit
-        self.show_all = show_all
-        self.follow = follow
-        self.last_run = since
-        self._interval = interval
-        self._output_fields = output
-        self.elastic = self.create_es(host)
+        self.debug = False
+        self.limit = 10000
+        self.show_all = False
+        self.host = host
+        self.output_fields = "host,log,message"
+        self._last_run = "now"
+        self._elastic = self.create_es()
 
-    def query_elk(self):
+    def query_elk(self, since, until, message_filters, interval, follow):
         '''Query the ELK once or, if the --follow option is set,
         in regular intervals'''
-        if self.follow:
+        query = self._gen_query(since, until, message_filters)
+        self._last_run = since
+        if follow:
             try:
                 while True:
-                    self.query = self._gen_query(self.last_run, 'now', self._message_filters)
-                    self.run_query()
-                    time.sleep(self._interval)
+                    query = self._gen_query(self._last_run, 'now', message_filters)
+                    self.run_query(query)
+                    time.sleep(interval)
             except KeyboardInterrupt:
                 sys.exit(0)
         else:
-            self.run_query()
+            self.run_query(query)
 
-    def  run_query(self):
+    def  run_query(self, query):
         '''Query the elk and print results'''
         if self.debug:
-            print("DEBUG: Sending query: {}\n".format(json.dumps(self.query)))
+            print("DEBUG: Sending query: {}\n".format(json.dumps(query)))
 
-        msg_count = self.elastic.count(body=self.query)
+        msg_count = self._elastic.count(body=query)
         printed_messages = 0
 
         result_size = self._get_message_batch_size()
-        res = self.elastic.search(body=self.query, size=result_size,
-                                  scroll='1m', sort='@timestamp:asc')
+        res = self._elastic.search(body=query, size=result_size,
+                                   scroll='1m', sort='@timestamp:asc')
         self._print_result(res)
 
         while res['hits']['hits'] and printed_messages < self.limit:
-            res = self.elastic.scroll(scroll_id=res['_scroll_id'], scroll='1m')
+            res = self._elastic.scroll(scroll_id=res['_scroll_id'], scroll='1m')
             self._print_result(res)
             printed_messages += result_size
 
@@ -72,14 +70,13 @@ class Elkctl():
                   + "Your search returned {} messages.\n".format(msg_count['count'])
                   + "Displaying the first {} messages\n".format(printed_messages))
 
-    def create_es(self, host):
+    def create_es(self):
         '''Set the host name and return an elasticsearch object'''
-
-        if host != "localhost:9200":
-            return Elasticsearch(host)
+        if self.host != "localhost:9200":
+            return Elasticsearch(self.host)
 
         if 'elkhost' not in self._config:
-            return Elasticsearch(host)
+            return Elasticsearch(self.host)
 
         if 'endpoint' in self._config['elkhost']:
             host = self._config['elkhost']['endpoint']
@@ -91,7 +88,8 @@ class Elkctl():
 
         return Elasticsearch(host)
 
-    def _load_config(self, config):
+    @classmethod
+    def _load_config(cls, config):
         '''Loads filters and other configuration from provided config file'''
         if os.path.isfile(config):
             try:
@@ -106,6 +104,11 @@ class Elkctl():
 
     def _gen_query(self, since, until, message_filters):
         '''Generates the search filters'''
+
+        if message_filters == "?":
+            print("\nERROR: No filter provided\n\nProvide a filter from the list:\n")
+            self._print_defined_filters()
+            sys.exit(1)
 
         # Is it a pre-defined filter?
         for entry in self._config['filters']:
@@ -123,7 +126,6 @@ class Elkctl():
         ]
         filters = []
         for entry in message_filters.split(','):
-
             try:
                 (field, phrase) = entry.split('=')
             except ValueError:
@@ -167,7 +169,8 @@ class Elkctl():
             print("{:{nwidth}} | {}".format(fentry['name'], fentry['desc'], nwidth=nwidth))
 
         print("\nOr define an ad-hoc filter in the following format:"
-              + "\nfield=value1,field=value2,...\n")
+              + "\nfield=value1,field=value2,...\n"
+              + "\nRun {} -h for more help\n".format(sys.argv[0]))
         sys.exit(2)
 
 
@@ -195,12 +198,12 @@ class Elkctl():
             _ts = hit['_source']['@timestamp']
             # Add a microsecond to the timestamp to
             # avoid repetition when following logs
-            self.last_run = "{}{}Z".format(_ts[0:22], int(_ts[22]) + 1)
+            self._last_run = "{}{}Z".format(_ts[0:22], int(_ts[22]) + 1)
             if self.show_all:
                 print(hit)
             else:
                 output = []
-                for field in self._output_fields.split(','):
+                for field in self.output_fields.split(','):
                     if field in hit['_source']:
                         output.append(hit['_source'][field])
                 if output:
@@ -225,19 +228,19 @@ if __name__ == "__main__":
                         + "(default: host,log,message)")
     PARSER.add_argument('-l', '--limit', type=int, default=10000,
                         help='Limit result (default 10000)')
-    PARSER.add_argument('-i', '--interval', type=int, default=15,
-                        help='Refresh interval (default 15). Use with -f --follow')
+    PARSER.add_argument('-i', '--interval', type=int, default=1,
+                        help='Refresh interval (default 1). Use with -f --follow')
     PARSER.add_argument('-c', '--config',
                         default="{}/.config/elkctl.conf".format(os.getenv('HOME')),
                         help='The config file')
     PARSER.add_argument('-H', '--host', default="localhost:9200",
                         help='The ELK hostname and port (host:port)')
-    PARSER.add_argument('filter', help='a pre-defined filter '
-                        + '(? provides a list of all defined filters)'
-                        + ' or ad-hoc query (field=value,field=value,...)')
+    PARSER.add_argument('filter', default='?', nargs='?', help='a pre-defined filter')
     ARGS = vars(PARSER.parse_args())
-    EC = Elkctl(ARGS['since'], ARGS['until'], ARGS['follow'],
-                ARGS['all'], ARGS['limit'], ARGS['filter'],
-                ARGS['debug'], ARGS['interval'], ARGS['config'],
-                ARGS['host'], ARGS['output'])
-    EC.query_elk()
+
+    EC = Elkctl(ARGS['config'], ARGS['host'])
+    EC.debug = ARGS['debug']
+    EC.limit = ARGS['limit']
+    EC.show_all = ARGS['all']
+    EC.output_fields = ARGS['output']
+    EC.query_elk(ARGS['since'], ARGS['until'], ARGS['filter'], ARGS['interval'], ARGS['follow'])
