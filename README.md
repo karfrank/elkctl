@@ -1,6 +1,6 @@
 The elkctl tool allows Elasticsearch users to search their logs like
 proper IT guys: from the command line.  It provides a slightly journaldctl-like
-experience (in a good way) and will hopefully also a cure for Tourette-like
+experience (in a good way) and will hopefully help to cure Tourette-like
 outbursts that are so common amongst admins who decide to send all their logs
 to an ELK and then realise that they have to search them from a shitty web
 interface.
@@ -52,7 +52,7 @@ elkctl host=myhost
 Replace `myhost` with a host that sends its logs to your Elasticsearch and you should see logs.
 
 ## Ad-hoc commands and filters
-`elkctl` can run ad-hoc commands or predefined filters. Ad-hoc commands useful for simple queries, but less powerful and convenient then filters. 
+`elkctl` can run ad-hoc commands or predefined filters. Ad-hoc commands are useful for simple queries, but also less powerful and convenient than pre-defined filters. 
 
 ### Ad-hoc commands
 
@@ -107,7 +107,7 @@ Afterwards, all you need to do is to run `elkctl breakfast` to execute the query
 
 ## Times 
 
-The default behaviour is to show the logs of the last 5 minutes. The `-s --since` and `-u --until` option allow to specifiy as required.
+The default behaviour is to show the logs of the last 5 minutes. The `-s --since` and `-u --until` options allow to specifiy time ranges as required.
 
  - The logs for the last hour: `elkctl -s 'now-1h' ...`
  - The logs for the last 30 minutes: `elkctl -s 'now-30m' ...`
@@ -119,7 +119,7 @@ See the [official Elasticsearch documention](https://www.elastic.co/guide/en/ela
 
 ## Tailing logs
 
-Simply add the `-f`  or `--follow` to your query and `elkctl` will query Elasticsearch every second. You can change the query interval with the `-i --interval` setting.
+Simply add `-f`  or `--follow` to your query and `elkctl` will query Elasticsearch every second. You can change the query interval with the `-i --interval` setting.
 
 ## Output fields
 
