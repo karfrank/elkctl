@@ -8,13 +8,14 @@ realise that they have to search them from a shitty web interface.
 """
 
 __author__ = "Karsten Franke"
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 import argparse
 import json
 import time
 import sys
 import os
+from datetime import datetime
 from elasticsearch import Elasticsearch
 
 class Elkctl():
@@ -41,6 +42,11 @@ class Elkctl():
                 while True:
                     query = self._gen_query(self._last_run, 'now', message_filters)
                     self.run_query(query)
+                    # Add a millisecond to the timestamp to
+                    # avoid repetition when following logs
+                    _ts = datetime.strptime(self._last_run, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    _ts = _ts.replace(microsecond=_ts.microsecond + 1000)
+                    self._last_run = datetime.strftime(_ts, "%Y-%m-%dT%H:%M:%S.%fZ")
                     time.sleep(interval)
             except KeyboardInterrupt:
                 sys.exit(0)
@@ -196,9 +202,7 @@ class Elkctl():
         '''Prints the returned messages'''
         for hit in result['hits']['hits']:
             _ts = hit['_source']['@timestamp']
-            # Add a microsecond to the timestamp to
-            # avoid repetition when following logs
-            self._last_run = "{}{}Z".format(_ts[0:22], int(_ts[22]) + 1)
+            self._last_run = _ts
             if self.show_all:
                 print(hit)
             else:
