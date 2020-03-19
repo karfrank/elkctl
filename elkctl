@@ -201,8 +201,7 @@ class Elkctl():
     def _print_result(self, result):
         '''Prints the returned messages'''
         for hit in result['hits']['hits']:
-            _ts = hit['_source']['@timestamp']
-            self._last_run = _ts
+            self._last_run = hit['_source']['@timestamp']
             if self.show_all:
                 print(hit)
             else:
