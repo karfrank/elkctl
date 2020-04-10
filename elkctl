@@ -8,14 +8,14 @@ realise that they have to search them from a shitty web interface.
 """
 
 __author__ = "Karsten Franke"
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 import argparse
 import json
 import time
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from elasticsearch import Elasticsearch
 
 class Elkctl():
@@ -199,7 +199,7 @@ class Elkctl():
             # Add a millisecond to the timestamp to
             # avoid repetition when following logs
             _ts = datetime.strptime(hit['_source']['@timestamp'], "%Y-%m-%dT%H:%M:%S.%fZ")
-            _ts = _ts.replace(microsecond=_ts.microsecond + 1000)
+            _ts = _ts + timedelta(milliseconds=1000)
             self._last_run = datetime.strftime(_ts, "%Y-%m-%dT%H:%M:%S.%fZ")
 
             if self.show_all:
