@@ -8,7 +8,7 @@ realise that they have to search them from a shitty web interface.
 """
 
 __author__ = "Karsten Franke"
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 import argparse
 import json
@@ -42,11 +42,6 @@ class Elkctl():
                 while True:
                     query = self._gen_query(self._last_run, 'now', message_filters)
                     self.run_query(query)
-                    # Add a millisecond to the timestamp to
-                    # avoid repetition when following logs
-                    _ts = datetime.strptime(self._last_run, "%Y-%m-%dT%H:%M:%S.%fZ")
-                    _ts = _ts.replace(microsecond=_ts.microsecond + 1000)
-                    self._last_run = datetime.strftime(_ts, "%Y-%m-%dT%H:%M:%S.%fZ")
                     time.sleep(interval)
             except KeyboardInterrupt:
                 sys.exit(0)
@@ -201,7 +196,12 @@ class Elkctl():
     def _print_result(self, result):
         '''Prints the returned messages'''
         for hit in result['hits']['hits']:
-            self._last_run = hit['_source']['@timestamp']
+            # Add a millisecond to the timestamp to
+            # avoid repetition when following logs
+            _ts = datetime.strptime(hit['_source']['@timestamp'], "%Y-%m-%dT%H:%M:%S.%fZ")
+            _ts = _ts.replace(microsecond=_ts.microsecond + 1000)
+            self._last_run = datetime.strftime(_ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+
             if self.show_all:
                 print(hit)
             else:
